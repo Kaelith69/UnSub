@@ -1,38 +1,135 @@
 # Gmail Unsubscriber
 
-<svg width="100%" viewBox="0 0 960 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gmail Unsubscriber banner">
-   <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-         <stop offset="0%" stop-color="#0b1220" />
-         <stop offset="100%" stop-color="#1c2942" />
+<svg width="100%" height="280" viewBox="0 0 1000 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gmail Unsubscriber - Clean your inbox like a machine">
+  <defs>
+    <!-- Primary gradient background -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" stop-opacity="1"/>
+      <stop offset="50%" stop-color="#1a1f35" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#0d1117" stop-opacity="1"/>
+    </linearGradient>
+
+    <!-- Accent gradient for highlights and borders -->
+    <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="50%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+
+    <!-- Subtle shine effect -->
+    <linearGradient id="shineGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.05"/>
+    </linearGradient>
+
+    <!-- Glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Soft shadow -->
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.15"/>
+    </filter>
+
+    <!-- Icon pattern -->
+    <pattern id="dotPattern" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <circle cx="20" cy="20" r="0.5" fill="#3b82f6" opacity="0.1"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="280" fill="url(#bgGradient)"/>
+
+  <!-- Dot pattern overlay -->
+  <rect width="1000" height="280" fill="url(#dotPattern)"/>
+
+  <!-- Border glow effect -->
+  <rect x="20" y="20" width="960" height="240" rx="16" fill="none" stroke="url(#accentGradient)" stroke-width="2" opacity="0.3" filter="url(#glow)"/>
+
+  <!-- Main card container -->
+  <rect x="24" y="24" width="952" height="232" rx="14" fill="url(#bgGradient)" stroke="url(#accentGradient)" stroke-width="1.5" opacity="0.8" filter="url(#shadow)"/>
+
+  <!-- Shine overlay -->
+  <rect x="24" y="24" width="952" height="116" rx="14" fill="url(#shineGradient)"/>
+
+  <!-- Left decorative icon area -->
+  <g>
+    <!-- Animated pulse circle -->
+    <circle cx="100" cy="140" r="45" fill="none" stroke="#10b981" stroke-width="1.5" opacity="0.3">
+      <animate attributeName="r" values="45;55;45" dur="3s" repeatCount="indefinite" timing-function="ease-in-out"/>
+      <animate attributeName="opacity" values="0.3;0.1;0.3" dur="3s" repeatCount="indefinite"/>
+    </circle>
+
+    <!-- Main icon circle -->
+    <circle cx="100" cy="140" r="38" fill="#1a1f35" stroke="url(#accentGradient)" stroke-width="2" filter="url(#glow)"/>
+
+    <!-- Inner animated rotation ring -->
+    <circle cx="100" cy="140" r="32" fill="none" stroke="url(#accentGradient)" stroke-width="1" opacity="0.5">
+      <animateTransform attributeName="transform" type="rotate" values="0 100 140; 360 100 140" dur="8s" repeatCount="indefinite"/>
+    </circle>
+
+    <!-- Icon text -->
+    <text x="100" y="150" text-anchor="middle" font-family="'Courier New', monospace" font-size="32" font-weight="bold" fill="#10b981" letter-spacing="2">0xU</text>
+  </g>
+
+  <!-- Main content area -->
+  <g>
+    <!-- Main heading -->
+    <text x="200" y="100" font-family="'Segoe UI', 'Helvetica Neue', sans-serif" font-size="48" font-weight="700" fill="#ffffff" letter-spacing="-0.5">
+      Gmail Unsubscriber
+    </text>
+
+    <!-- Subheading with gradient text effect -->
+    <defs>
+      <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#10b981"/>
+        <stop offset="100%" stop-color="#3b82f6"/>
       </linearGradient>
-      <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
-         <stop offset="0%" stop-color="#34d399" />
-         <stop offset="100%" stop-color="#60a5fa" />
-      </linearGradient>
-      <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
-         <feGaussianBlur stdDeviation="3" result="blur"/>
-         <feMerge>
-            <feMergeNode in="blur"/>
-            <feMergeNode in="SourceGraphic"/>
-         </feMerge>
-      </filter>
-   </defs>
+    </defs>
+    <text x="200" y="145" font-family="'Segoe UI', 'Helvetica Neue', sans-serif" font-size="20" font-weight="500" fill="url(#textGradient)">
+      Clean your inbox like a machine
+    </text>
 
-   <rect x="0" y="0" width="960" height="240" rx="18" fill="url(#bg)"/>
-   <rect x="24" y="24" width="912" height="192" rx="14" fill="none" stroke="url(#accent)" stroke-opacity="0.45"/>
+    <!-- Decorative line with animation -->
+    <rect x="200" y="165" width="0" height="3" rx="1.5" fill="url(#accentGradient)">
+      <animate attributeName="width" values="0;260;260;0" dur="4s" repeatCount="indefinite" timing-function="ease-in-out"/>
+    </rect>
 
-   <circle cx="120" cy="120" r="42" fill="#111827" stroke="#34d399" stroke-width="2" filter="url(#softGlow)">
-      <animate attributeName="r" values="40;42;40" dur="3.2s" repeatCount="indefinite"/>
-   </circle>
-   <text x="120" y="128" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" fill="#e5e7eb">0xU</text>
+    <!-- Feature tags -->
+    <g>
+      <!-- Tag 1 -->
+      <rect x="200" y="200" width="90" height="24" rx="12" fill="#10b981" opacity="0.15" stroke="#10b981" stroke-width="1"/>
+      <text x="245" y="216" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#10b981">OAuth Enabled</text>
 
-   <text x="200" y="105" font-family="Inter, Segoe UI, system-ui, sans-serif" font-size="46" font-weight="700" fill="#f9fafb">Gmail Unsubscriber</text>
-   <text x="200" y="145" font-family="Inter, Segoe UI, system-ui, sans-serif" font-size="22" fill="#cbd5e1">Clean your inbox like a machine</text>
+      <!-- Tag 2 -->
+      <rect x="310" y="200" width="85" height="24" rx="12" fill="#06b6d4" opacity="0.15" stroke="#06b6d4" stroke-width="1"/>
+      <text x="352" y="216" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#06b6d4">Privacy First</text>
 
-   <rect x="200" y="166" width="340" height="6" rx="3" fill="url(#accent)">
-      <animate attributeName="width" values="210;340;210" dur="2.8s" repeatCount="indefinite"/>
-   </rect>
+      <!-- Tag 3 -->
+      <rect x="415" y="200" width="115" height="24" rx="12" fill="#3b82f6" opacity="0.15" stroke="#3b82f6" stroke-width="1"/>
+      <text x="472" y="216" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="600" fill="#3b82f6">Bulk Unsubscribe</text>
+    </g>
+  </g>
+
+  <!-- Right side accent elements -->
+  <g opacity="0.6">
+    <!-- Floating accent dots -->
+    <circle cx="850" cy="60" r="3" fill="#10b981" filter="url(#glow)">
+      <animate attributeName="cy" values="60;70;60" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="900" cy="80" r="2.5" fill="#06b6d4" filter="url(#glow)">
+      <animate attributeName="cy" values="80;90;80" dur="3.5s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="850" cy="200" r="2" fill="#3b82f6" filter="url(#glow)">
+      <animate attributeName="cy" values="200;210;200" dur="4s" repeatCount="indefinite"/>
+    </circle>
+  </g>
 </svg>
 
 ## 1. Project Overview
