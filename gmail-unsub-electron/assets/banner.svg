@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="200" viewBox="0 0 900 200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f1117;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a1d2e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ea4335;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ff6b35;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="200" rx="12" fill="url(#bg)" />
+
+  <!-- Accent bar -->
+  <rect x="0" y="0" width="6" height="200" rx="3" fill="url(#accent)" />
+
+  <!-- Envelope icon -->
+  <g transform="translate(56, 68)">
+    <!-- Envelope body -->
+    <rect x="0" y="0" width="64" height="44" rx="4" fill="none" stroke="#ea4335" stroke-width="2.5" />
+    <!-- Envelope flap lines -->
+    <polyline points="0,0 32,26 64,0" fill="none" stroke="#ea4335" stroke-width="2.5" stroke-linejoin="round" />
+    <!-- Strike-through (unsubscribe indicator) -->
+    <line x1="10" y1="54" x2="54" y2="54" stroke="#ff6b35" stroke-width="2.5" stroke-linecap="round" />
+    <line x1="48" y1="46" x2="56" y2="62" stroke="#ff6b35" stroke-width="2.5" stroke-linecap="round" />
+  </g>
+
+  <!-- Title -->
+  <text x="152" y="90" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="42" font-weight="700" fill="#ffffff" letter-spacing="-1">UnSub</text>
+
+  <!-- Subtitle -->
+  <text x="154" y="122" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#8b8fa8">Gmail Unsubscriber — deterministic, private, local</text>
+
+  <!-- Divider -->
+  <line x1="152" y1="135" x2="620" y2="135" stroke="#2a2d3e" stroke-width="1" />
+
+  <!-- Feature pills -->
+  <g transform="translate(152, 150)">
+    <!-- OAuth pill -->
+    <rect x="0" y="0" width="80" height="24" rx="12" fill="#1e2130" />
+    <text x="40" y="16" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#8b8fa8" text-anchor="middle">OAuth 2.0</text>
+
+    <!-- Local pill -->
+    <rect x="92" y="0" width="80" height="24" rx="12" fill="#1e2130" />
+    <text x="132" y="16" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#8b8fa8" text-anchor="middle">Local Only</text>
+
+    <!-- Electron pill -->
+    <rect x="184" y="0" width="80" height="24" rx="12" fill="#1e2130" />
+    <text x="224" y="16" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#8b8fa8" text-anchor="middle">Electron</text>
+
+    <!-- MIT pill -->
+    <rect x="276" y="0" width="60" height="24" rx="12" fill="#1e2130" />
+    <text x="306" y="16" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#8b8fa8" text-anchor="middle">MIT</text>
+  </g>
+
+  <!-- Right decoration -->
+  <circle cx="820" cy="100" r="60" fill="none" stroke="#ea4335" stroke-width="1" opacity="0.15" />
+  <circle cx="820" cy="100" r="40" fill="none" stroke="#ea4335" stroke-width="1" opacity="0.1" />
+  <circle cx="820" cy="100" r="20" fill="#ea4335" opacity="0.08" />
+</svg>

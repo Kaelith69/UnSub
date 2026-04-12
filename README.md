@@ -1,7 +1,7 @@
-# Gmail Unsubscriber
+# UnSub
 
 <div align="center">
-  <img src="./assets/banner.svg" alt="Gmail Unsubscriber Banner" width="100%" />
+  <img src="./gmail-unsub-electron/assets/banner.svg" alt="Gmail Unsubscriber Banner" width="100%" />
 </div>
 
 > Clean your inbox deterministically, locally, and at scale.
@@ -10,7 +10,7 @@
 
 ## Project Overview
 
-Inbox overload is exponential. This tool provides a **deterministic, privacy-first unsubscribe workflow** without external data exposure.
+Inbox overload is exponential. **UnSub** provides a **deterministic, privacy-first unsubscribe workflow** without external data exposure. It runs entirely on your machine — no cloud, no third-party services.
 
 ---
 
@@ -55,4 +55,4 @@ npm run dev
 
 ## License
 
-[MIT](../LICENSE)
+MIT
