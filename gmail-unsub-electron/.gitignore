@@ -1,5 +1,35 @@
+# Dependencies
 node_modules/
-dist/
-token.json
-.env
+package-lock.json
+npm-debug.log
+yarn-error.log
 *.log
+
+# Build outputs
+dist/
+out/
+
+# Sensitive files - NEVER COMMIT
+.env
+.env.local
+.env.*.local
+token.json
+auth-token.json
+credentials.json
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Electron build artifacts
+*.exe
+*.nsis
+*.asar
+
+# Temporary files
+tmp/
+temp/
