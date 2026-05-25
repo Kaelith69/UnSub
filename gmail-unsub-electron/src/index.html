@@ -624,12 +624,24 @@ async function boot() {
     if (s && s.authenticated) {
       setUser(s.email);
       show('scan');
+    } else if (!s?.configured) {
+      show('auth');
+      // Show error if OAuth is not configured
+      if (s?.error) {
+        setTimeout(() => toast(s.error), 500);
+      } else {
+        setTimeout(() => toast('OAuth credentials not configured. Please set environment variables.'), 500);
+      }
     } else {
       show('auth');
+      if (s?.error) {
+        setTimeout(() => toast(s.error), 500);
+      }
     }
   } catch(e) {
     console.error('[boot]', e);
-    toast('Connection error');
+    toast('Connection error. Please try again.');
+    show('auth');
   }
 }
 
@@ -645,14 +657,21 @@ async function doLogin() {
   try {
     btn.textContent = 'Opening browser…';
     const r = await window.api.authLogin();
-    if (r && r.ok) { setUser(r.email); show('scan'); }
-    else toast('Sign-in failed');
+    if (r && r.ok) {
+      setUser(r.email);
+      show('scan');
+    } else if (r?.error) {
+      toast('Sign-in failed: ' + r.error);
+    } else {
+      toast('Sign-in failed. Please try again.');
+    }
   } catch(e) {
     console.error('[doLogin]', e);
-    toast('Sign-in error: ' + e.message);
+    toast('Sign-in error: ' + (e.message || 'Unknown error'));
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
   }
-  btn.disabled = false;
-  btn.innerHTML = originalHtml;
 }
 
 async function logout() {
@@ -698,7 +717,14 @@ async function doScan() {
 
     const r = await window.api.scanStart({ scanDepth });
 
-    if (!r || !r.ok) { throw new Error(r?.error || 'Scan failed'); }
+    if (!r || !r.ok) {
+      if (r?.code === 'NOT_CONFIGURED') {
+        throw new Error('OAuth not configured. Please set environment variables.');
+      } else if (r?.code === 'NOT_AUTHENTICATED') {
+        throw new Error('Not authenticated. Please sign in first.');
+      }
+      throw new Error(r?.error || 'Scan failed');
+    }
     STATE.senders = r.senders || [];
     STATE.senderById = new Map(STATE.senders.map(s => [s.id, s]));
     STATE.filteredCacheKey = '';
