@@ -3,12 +3,17 @@
   "version": "1.0.0",
   "description": "Clean your Gmail inbox in one click",
   "main": "src/main.js",
+  "author": "Gmail Unsubscriber Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kaelith69/UnSub.git"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --win --linux"
+    "build:win": "electron-builder --win --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "build:all": "electron-builder --win --linux --publish never"
   },
   "build": {
     "appId": "com.gmailunsubscriber.app",
