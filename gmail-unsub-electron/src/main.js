@@ -32,6 +32,15 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
 ];
 
+// Log startup configuration
+if (process.argv.includes('--dev')) {
+  console.info('[Config]', {
+    OAUTH_CONFIGURED: GOOGLE_CLIENT_ID.length > 0 && GOOGLE_CLIENT_SECRET.length > 0,
+    CLIENT_ID_SET: GOOGLE_CLIENT_ID.length > 0,
+    CLIENT_SECRET_SET: GOOGLE_CLIENT_SECRET.length > 0,
+  });
+}
+
 const REQUEST_TIMEOUT = 15000; // 15 seconds for HTTP requests
 const AUTH_TIMEOUT = 300000;   // 5 minutes for OAuth
 const RETRY_BASE_DELAY_MS = 350;

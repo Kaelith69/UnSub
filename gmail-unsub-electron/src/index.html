@@ -404,6 +404,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);
       Sign in with Google
     </button>
     <div class="auth-note">Your credentials are stored only on this device.</div>
+    <div id="config-error" style="display:none;margin-top:16px;padding:12px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font-size:12px;color:var(--red);text-align:left;line-height:1.5"></div>
   </div>
 </div>
 
@@ -624,16 +625,21 @@ async function boot() {
     if (s && s.authenticated) {
       setUser(s.email);
       show('scan');
+      // Clear any config errors
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) configErrorEl.style.display = 'none';
     } else if (!s?.configured) {
       show('auth');
-      // Show error if OAuth is not configured
-      if (s?.error) {
-        setTimeout(() => toast(s.error), 500);
-      } else {
-        setTimeout(() => toast('OAuth credentials not configured. Please set environment variables.'), 500);
+      // Show OAuth configuration error
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) {
+        configErrorEl.style.display = 'block';
+        configErrorEl.innerHTML = `<strong>⚠ OAuth not configured</strong><br>Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables. See .env.example for details.`;
       }
     } else {
       show('auth');
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) configErrorEl.style.display = 'none';
       if (s?.error) {
         setTimeout(() => toast(s.error), 500);
       }
