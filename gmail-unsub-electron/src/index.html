@@ -404,6 +404,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);
       Sign in with Google
     </button>
     <div class="auth-note">Your credentials are stored only on this device.</div>
+    <div id="config-error" style="display:none;margin-top:16px;padding:12px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font-size:12px;color:var(--red);text-align:left;line-height:1.5"></div>
   </div>
 </div>
 
@@ -624,12 +625,29 @@ async function boot() {
     if (s && s.authenticated) {
       setUser(s.email);
       show('scan');
+      // Clear any config errors
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) configErrorEl.style.display = 'none';
+    } else if (!s?.configured) {
+      show('auth');
+      // Show OAuth configuration error
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) {
+        configErrorEl.style.display = 'block';
+        configErrorEl.innerHTML = `<strong>⚠ OAuth not configured</strong><br>Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables. See .env.example for details.`;
+      }
     } else {
       show('auth');
+      const configErrorEl = document.getElementById('config-error');
+      if (configErrorEl) configErrorEl.style.display = 'none';
+      if (s?.error) {
+        setTimeout(() => toast(s.error), 500);
+      }
     }
   } catch(e) {
     console.error('[boot]', e);
-    toast('Connection error');
+    toast('Connection error. Please try again.');
+    show('auth');
   }
 }
 
@@ -645,14 +663,21 @@ async function doLogin() {
   try {
     btn.textContent = 'Opening browser…';
     const r = await window.api.authLogin();
-    if (r && r.ok) { setUser(r.email); show('scan'); }
-    else toast('Sign-in failed');
+    if (r && r.ok) {
+      setUser(r.email);
+      show('scan');
+    } else if (r?.error) {
+      toast('Sign-in failed: ' + r.error);
+    } else {
+      toast('Sign-in failed. Please try again.');
+    }
   } catch(e) {
     console.error('[doLogin]', e);
-    toast('Sign-in error: ' + e.message);
+    toast('Sign-in error: ' + (e.message || 'Unknown error'));
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
   }
-  btn.disabled = false;
-  btn.innerHTML = originalHtml;
 }
 
 async function logout() {
@@ -698,7 +723,14 @@ async function doScan() {
 
     const r = await window.api.scanStart({ scanDepth });
 
-    if (!r || !r.ok) { throw new Error(r?.error || 'Scan failed'); }
+    if (!r || !r.ok) {
+      if (r?.code === 'NOT_CONFIGURED') {
+        throw new Error('OAuth not configured. Please set environment variables.');
+      } else if (r?.code === 'NOT_AUTHENTICATED') {
+        throw new Error('Not authenticated. Please sign in first.');
+      }
+      throw new Error(r?.error || 'Scan failed');
+    }
     STATE.senders = r.senders || [];
     STATE.senderById = new Map(STATE.senders.map(s => [s.id, s]));
     STATE.filteredCacheKey = '';
@@ -706,8 +738,12 @@ async function doScan() {
     STATE.selected.clear();
     renderList();
     show('select');
-    if (r.scanErrors > 0) {
-      toast(`Scan completed with ${r.scanErrors} skipped email(s).`);
+    
+    // Provide better feedback based on results
+    if (STATE.senders.length === 0) {
+      toast('✓ Scan complete - no subscription emails found!');
+    } else if (r.scanErrors > 0) {
+      toast(`Scan completed with ${r.scanErrors} skipped email(s). Found ${STATE.senders.length} senders.`);
     } else if (r.metrics?.durationMs) {
       const seconds = Math.max(1, Math.round(r.metrics.durationMs / 1000));
       toast(`Scan complete in ${seconds}s · ${r.metrics.senders} senders found.`);
@@ -983,12 +1019,19 @@ async function doExecute() {
             setRow(s.id,'s', cleanupLabel(mLabel(r.method), r.cleanedCount));
           } else {
             fail++;
-            setRow(s.id,'f', cleanupLabel(r?.reason||'Unknown error', r?.cleanedCount));
+            const errorMsg = r?.error || r?.reason || 'Unknown error';
+            if (r?.reason === 'NOT_AUTHENTICATED') {
+              setRow(s.id,'f', 'Not authenticated - please sign in again');
+            } else if (r?.reason === 'NOT_CONFIGURED') {
+              setRow(s.id,'f', 'OAuth not configured');
+            } else {
+              setRow(s.id,'f', cleanupLabel(errorMsg, r?.cleanedCount));
+            }
           }
         } catch(e) {
           fail++;
           console.error('[unsubOne]', e);
-          setRow(s.id,'f', e.message);
+          setRow(s.id,'f', e.message || 'Error');
         } finally {
           processed++;
           setExecProgress();
@@ -1002,19 +1045,37 @@ async function doExecute() {
 
   document.getElementById('cancel-btn').style.display='none';
 
+  const completionMessage = STATE.executionCancelled
+    ? `${ok} unsubscribed · ${fail} failed · ${cleaned} trashed`
+    : `${ok} unsubscribed · ${fail} failed · ${cleaned} trashed`;
+
   if (STATE.executionCancelled) {
     document.getElementById('ex-title').textContent = 'Cancelled';
     document.getElementById('ex-sub').textContent = `${ok} completed before cancel · ${fail} failed · ${cleaned} moved to Trash`;
   } else {
     document.getElementById('ex-title').textContent = 'Done ✓';
-    document.getElementById('ex-sub').textContent = `${ok} unsubscribed · ${fail} failed · ${cleaned} moved to Trash`;
+    const failMsg = fail > 0 ? ` (${fail} failed)` : '';
+    document.getElementById('ex-sub').textContent = `${ok} unsubscribed${failMsg} · ${cleaned} moved to Trash`;
   }
   processed = total;
   setExecProgress();
   document.getElementById('ex-cards').style.display='flex';
   document.getElementById('ex-ok').textContent=ok;
   document.getElementById('ex-fail').textContent=fail;
-  if (!STATE.executionCancelled) startUndo();
+  
+  // Show appropriate feedback
+  if (!STATE.executionCancelled) {
+    if (fail === 0) {
+      toast(`✓ Successfully unsubscribed from ${ok} senders!`);
+    } else if (ok > 0) {
+      toast(`✓ Completed: ${ok} unsubscribed, ${fail} failed`);
+    } else {
+      toast(`⚠ Unable to unsubscribe from any senders. Please try again or check your configuration.`);
+    }
+    startUndo();
+  } else {
+    toast(`Execution cancelled: ${ok} completed, ${fail} failed`);
+  }
 }
 
 function cancelExecute() {

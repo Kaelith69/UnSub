@@ -397,6 +397,15 @@ All security mechanisms are verified in the source code:
 
 ---
 
+## Additional Documentation
+
+- **[CHANGELOG](./gmail-unsub-electron/CHANGELOG.md)** - Version history and release notes
+- **[SECURITY](./gmail-unsub-electron/SECURITY.md)** - Detailed security policies and practices
+- **[Setup Guide](./gmail-unsub-electron/README.md#setup)** - Step-by-step installation instructions
+- **[Troubleshooting](./gmail-unsub-electron/README.md#troubleshooting)** - Common issues and solutions
+
+---
+
 ## License
 
 MIT

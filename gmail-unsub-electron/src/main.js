@@ -32,6 +32,15 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
 ];
 
+// Log startup configuration
+if (process.argv.includes('--dev')) {
+  console.info('[Config]', {
+    OAUTH_CONFIGURED: GOOGLE_CLIENT_ID.length > 0 && GOOGLE_CLIENT_SECRET.length > 0,
+    CLIENT_ID_SET: GOOGLE_CLIENT_ID.length > 0,
+    CLIENT_SECRET_SET: GOOGLE_CLIENT_SECRET.length > 0,
+  });
+}
+
 const REQUEST_TIMEOUT = 15000; // 15 seconds for HTTP requests
 const AUTH_TIMEOUT = 300000;   // 5 minutes for OAuth
 const RETRY_BASE_DELAY_MS = 350;
@@ -211,6 +220,10 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
   if (process.argv.includes('--dev')) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
@@ -220,24 +233,40 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
+// Handle app termination
+process.on('exit', () => {
+  if (mainWindow) {
+    mainWindow.destroy();
+  }
+});
+
 // ── Auth IPC ──────────────────────────────────────────────────────────────────
 
 ipcMain.handle('auth:status', async () => {
   if (!isOAuthConfigured()) {
-    return { authenticated: false, configured: false };
+    return {
+      authenticated: false,
+      configured: false,
+      error: 'OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.'
+    };
   }
   const tokens = store.get('tokens');
-  if (!tokens?.access_token && !tokens?.refresh_token) return { authenticated: false };
+  if (!tokens?.access_token && !tokens?.refresh_token) {
+    return { authenticated: false, configured: true };
+  }
   try {
     oauth2Client = makeOAuthClient();
+    if (!oauth2Client) {
+      return { authenticated: false, configured: false, error: 'Failed to initialize OAuth client' };
+    }
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    const profile = await gmail.users.getProfile({ userId: 'me' });
-    return { authenticated: true, email: profile.data.emailAddress };
+    const profile = await withRetry(() => gmail.users.getProfile({ userId: 'me' }), 'AuthStatus');
+    return { authenticated: true, email: profile.data.emailAddress, configured: true };
   } catch (e) {
     logError('AuthStatus', e);
     // If tokens are invalid/revoked, clear persisted credentials.
     try { store.delete('tokens'); } catch { /* ignore */ }
-    return { authenticated: false };
+    return { authenticated: false, configured: true, error: 'Token validation failed. Please sign in again.' };
   }
 });
 
@@ -441,6 +470,12 @@ function sendProgress(phase, progress, meta = {}) {
 
 ipcMain.handle('scan:start', async (_, options = {}) => {
   try {
+    if (!isOAuthConfigured()) {
+      return { ok: false, error: 'OAuth not configured', code: 'NOT_CONFIGURED' };
+    }
+    if (!oauth2Client) {
+      return { ok: false, error: 'OAuth client not initialized. Please sign in first.', code: 'NOT_AUTHENTICATED' };
+    }
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     sendProgress('Connecting to Gmail…', 5);
 
@@ -628,6 +663,12 @@ ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds,
     // Input validation
     if (!senderId || typeof senderId !== 'string') {
       return { ok: false, reason: 'INVALID_SENDER_ID' };
+    }
+    if (!isOAuthConfigured()) {
+      return { ok: false, reason: 'NOT_CONFIGURED', error: 'OAuth not configured' };
+    }
+    if (!oauth2Client) {
+      return { ok: false, reason: 'NOT_AUTHENTICATED', error: 'Not authenticated. Please sign in first.' };
     }
     if (!Array.isArray(messageIds)) {
       messageIds = [];
