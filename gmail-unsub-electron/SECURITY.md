@@ -5,7 +5,7 @@ Gmail Unsubscriber is designed with privacy and security as first-class concerns
 ## Data Processing
 
 - **Local-Only Processing**: All email data is processed entirely on your local machine. No email content, metadata, or tokens are sent to any server other than Google's Gmail API.
-- **Token Encryption**: OAuth tokens are encrypted using a device-scoped key (SHA-256 hash of your user data path) and stored locally using `electron-store`.
+- **Token Encryption**: OAuth tokens are encrypted using a cryptographically random 32-byte key generated on first run and stored in the application data directory via `electron-store`. The key is device-scoped and not derivable from external information.
 - **No Analytics**: No usage analytics, telemetry, or tracking is performed.
 - **No External Services**: The application does not communicate with any external services except Google's Gmail API.
 
