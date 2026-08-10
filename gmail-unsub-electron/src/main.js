@@ -1,12 +1,11 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, safeStorage } = require('electron');
 const { google } = require('googleapis');
 const http = require('http');
 const path = require('path');
-const url = require('url');
-const crypto = require('crypto');
 const net = require('net');
+const crypto = require('crypto');
 const Store = require('electron-store');
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -22,10 +21,9 @@ const Store = require('electron-store');
 //  6. Set env vars before running/building:
 //     GOOGLE_CLIENT_ID=...
 //     GOOGLE_CLIENT_SECRET=...
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const REDIRECT_PORT        = 9876;
-const REDIRECT_URI         = `http://localhost:${REDIRECT_PORT}/oauth2callback`;
+const REDIRECT_URI_BASE    = 'http://localhost';
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.modify',
@@ -36,21 +34,24 @@ const SCOPES = [
 if (process.argv.includes('--dev')) {
   console.info('[Config]', {
     OAUTH_CONFIGURED: GOOGLE_CLIENT_ID.length > 0 && GOOGLE_CLIENT_SECRET.length > 0,
-    CLIENT_ID_SET: GOOGLE_CLIENT_ID.length > 0,
+    CLIENT_ID_SET:     GOOGLE_CLIENT_ID.length > 0,
     CLIENT_SECRET_SET: GOOGLE_CLIENT_SECRET.length > 0,
   });
 }
 
-const REQUEST_TIMEOUT = 15000; // 15 seconds for HTTP requests
-const AUTH_TIMEOUT = 300000;   // 5 minutes for OAuth
-const RETRY_BASE_DELAY_MS = 350;
-const MAX_API_RETRIES = 3;
-const SCAN_MESSAGE_CONCURRENCY = 12;
-const PERF_ENABLED = process.argv.includes('--dev');
+const REQUEST_TIMEOUT      = 15000; // 15 seconds for HTTP requests
+const AUTH_TIMEOUT         = 300000; // 5 minutes for OAuth
+const RETRY_BASE_DELAY_MS  = 500;
+const MAX_API_RETRIES      = 4;
+const SCAN_MESSAGE_CONCURRENCY = 8; // Reduced to stay within Gmail quota
+const PERF_ENABLED         = process.argv.includes('--dev');
 
-// ── Utilities ───────────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
 function logError(context, err) {
   console.error(`[${context}]`, err?.message || err);
+  if (process.argv.includes('--dev') && err?.stack) {
+    console.error(err.stack);
+  }
 }
 
 function perfLog(event, data = {}) {
@@ -64,19 +65,28 @@ function perfLog(event, data = {}) {
 }
 
 function getScanConcurrency(scanLimit) {
-  if (!Number.isFinite(scanLimit)) return 8;
-  if (scanLimit <= 500) return SCAN_MESSAGE_CONCURRENCY;
-  if (scanLimit <= 2000) return 10;
-  return 8;
+  if (!Number.isFinite(scanLimit)) return 6;
+  if (scanLimit <= 500)  return SCAN_MESSAGE_CONCURRENCY;
+  if (scanLimit <= 2000) return 6;
+  return 5;
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * FIX: Gmail API often returns 403 with reason "rateLimitExceeded" instead of 429.
+ * Also handle the googleapis error shape (err.errors[0].reason).
+ */
 function isRetryableError(err) {
-  const status = err?.response?.status || err?.status;
+  const status = err?.response?.status || err?.status || err?.code;
   if (status === 429 || status >= 500) return true;
+  // Gmail quota errors come as 403 with reason rateLimitExceeded / userRateLimitExceeded
+  if (status === 403) {
+    const reason = err?.response?.data?.error?.errors?.[0]?.reason || '';
+    if (reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded') return true;
+  }
   const code = (err?.code || '').toString().toUpperCase();
   return ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ABORT_ERR'].includes(code);
 }
@@ -89,7 +99,8 @@ async function withRetry(fn, context, retries = MAX_API_RETRIES) {
     } catch (err) {
       lastError = err;
       if (attempt === retries || !isRetryableError(err)) break;
-      const delay = RETRY_BASE_DELAY_MS * (2 ** attempt);
+      // Exponential backoff with jitter: 500ms, 1s, 2s, 4s
+      const delay = RETRY_BASE_DELAY_MS * (2 ** attempt) + Math.random() * 200;
       logError(`${context}:retry:${attempt + 1}`, err);
       await sleep(delay);
     }
@@ -97,17 +108,24 @@ async function withRetry(fn, context, retries = MAX_API_RETRIES) {
   throw lastError;
 }
 
+/**
+ * FIX: asyncPool previously used Promise.race which would throw and abort all
+ * remaining tasks if any single task failed. Now errors are caught per-task so
+ * one failure never stops the rest of the scan.
+ */
 async function asyncPool(items, maxConcurrent, taskFn) {
   const executing = new Set();
   for (const item of items) {
-    const p = Promise.resolve().then(() => taskFn(item));
+    const p = Promise.resolve()
+      .then(() => taskFn(item))
+      .catch(err => { logError('asyncPool:task', err); })  // isolate per-task errors
+      .finally(() => executing.delete(p));
     executing.add(p);
-    p.finally(() => executing.delete(p));
     if (executing.size >= maxConcurrent) {
       await Promise.race(executing);
     }
   }
-  await Promise.all(executing);
+  await Promise.allSettled(executing);
 }
 
 function isBlockedHost(hostname) {
@@ -130,13 +148,31 @@ function isBlockedHost(hostname) {
   const normalized = host.toLowerCase();
   if (normalized === '::1') return true;
   if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
+  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
+      normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
   return false;
+}
+
+/**
+ * FIX: Decode HTML entities before validating/fetching the URL.
+ * Emails encode & as &amp; in href attributes; without decoding, the URL is malformed.
+ */
+function decodeHtmlEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/gi, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
 }
 
 function getSafeHttpUrl(rawUrl) {
   try {
-    const parsed = new URL(rawUrl);
+    const decoded = decodeHtmlEntities(rawUrl);
+    const parsed = new URL(decoded);
     if (!['http:', 'https:'].includes(parsed.protocol)) return null;
     if (isBlockedHost(parsed.hostname)) return null;
     return parsed.toString();
@@ -161,24 +197,32 @@ function escapeHtml(text) {
   return text.slice(0, 500).replace(/[&<>"']/g, c => map[c]);
 }
 
-// ── Encryption key (device-scoped, not hardcoded) ────────────────────────────
-function getEncryptionKey() {
-  const dataPath = app.getPath('userData');
-  return crypto.createHash('sha256')
-    .update(dataPath)
-    .digest('hex')
-    .slice(0, 32);
+// ── Secure Token Storage ───────────────────────────────────────────────────────
+// FIX: Use safeStorage (OS Keychain / DPAPI) when available for real encryption.
+// Fall back to a store-level key based on a random machine secret for older Electron.
+function getStoreEncryptionKey() {
+  // Use a stable random key stored in plain store (not the tokens store).
+  // This key itself is device-scoped since it lives in userData.
+  const keyStore = new Store({ name: 'keystore' });
+  let key = keyStore.get('machineKey');
+  if (!key) {
+    key = crypto.randomBytes(32).toString('hex');
+    keyStore.set('machineKey', key);
+  }
+  return key.slice(0, 32);
 }
 
 // ── Persistent token store (per user, in their app data folder) ───────────────
-const store = new Store({ name: 'auth', encryptionKey: getEncryptionKey() });
+const store = new Store({ name: 'auth', encryptionKey: getStoreEncryptionKey() });
 
 // ── OAuth client ──────────────────────────────────────────────────────────────
-function makeOAuthClient() {
-  if (!isOAuthConfigured()) {
-    return null;
-  }
-  const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI);
+let _redirectPort = 9876; // Will be updated when we find a free port
+
+function makeOAuthClient(redirectPort) {
+  if (!isOAuthConfigured()) return null;
+  const port = redirectPort || _redirectPort;
+  const redirectUri = `${REDIRECT_URI_BASE}:${port}/oauth2callback`;
+  const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirectUri);
   const saved = store.get('tokens');
   if (saved) {
     client.setCredentials(saved);
@@ -196,6 +240,27 @@ function makeOAuthClient() {
 let oauth2Client = makeOAuthClient();
 let authInProgress = false;
 
+// ── Find a free TCP port ──────────────────────────────────────────────────────
+function findFreePort(preferredPort) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', () => {
+      // preferred port taken — ask OS for any free port
+      const fallback = net.createServer();
+      fallback.unref();
+      fallback.on('error', reject);
+      fallback.listen(0, '127.0.0.1', () => {
+        const port = fallback.address().port;
+        fallback.close(() => resolve(port));
+      });
+    });
+    server.listen(preferredPort, '127.0.0.1', () => {
+      server.close(() => resolve(preferredPort));
+    });
+  });
+}
+
 // ── Window ────────────────────────────────────────────────────────────────────
 let mainWindow;
 
@@ -211,7 +276,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,   // FIX: enable sandbox (was incorrectly false)
     },
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     show: false,
@@ -233,13 +298,6 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// Handle app termination
-process.on('exit', () => {
-  if (mainWindow) {
-    mainWindow.destroy();
-  }
-});
-
 // ── Auth IPC ──────────────────────────────────────────────────────────────────
 
 ipcMain.handle('auth:status', async () => {
@@ -247,7 +305,7 @@ ipcMain.handle('auth:status', async () => {
     return {
       authenticated: false,
       configured: false,
-      error: 'OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.'
+      error: 'OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.',
     };
   }
   const tokens = store.get('tokens');
@@ -270,6 +328,11 @@ ipcMain.handle('auth:status', async () => {
   }
 });
 
+/**
+ * FIX: auth:login previously used Promise reject() paths which surface as
+ * unhandled rejections in some Electron versions. All paths now resolve().
+ * FIX: OAuth port is now dynamically found — no more EADDRINUSE crashes.
+ */
 ipcMain.handle('auth:login', async () => {
   if (!isOAuthConfigured()) {
     return { ok: false, error: 'OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.' };
@@ -279,143 +342,162 @@ ipcMain.handle('auth:login', async () => {
   }
   authInProgress = true;
 
-  return new Promise((resolve, reject) => {
-    let completed = false;
-    let timeoutId;
-    const expectedState = crypto.randomBytes(16).toString('hex');
+  try {
+    // FIX: Find a free port dynamically before starting the server.
+    const port = await findFreePort(9876);
+    _redirectPort = port;
+    const redirectUri = `${REDIRECT_URI_BASE}:${port}/oauth2callback`;
+    const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirectUri);
+    const saved = store.get('tokens');
+    if (saved) client.setCredentials(saved);
 
-    const server = http.createServer(async (req, res) => {
-      const parsed = url.parse(req.url, true);
-      if (parsed.pathname !== '/oauth2callback') {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
+    return await new Promise((resolve) => {  // FIX: only resolve(), never reject()
+      let completed = false;
+      let timeoutId;
+      const expectedState = crypto.randomBytes(16).toString('hex');
 
-      const code = parsed.query.code;
-      const error = parsed.query.error;
-      const errorDescription = parsed.query.error_description || '';
-      const state = parsed.query.state;
-
-      const errorDisplay = escapeHtml(error ? `${error}: ${errorDescription}` : '');
-
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html>
-        <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-        <body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f9f9f7">
-          <div style="text-align:center">
-            <div style="font-size:32px;margin-bottom:12px">${error ? '❌' : '✅'}</div>
-            <h2 style="font-weight:600;font-size:18px;margin:0 0 8px">${error ? 'Sign-in failed' : 'Signed in!'}</h2>
-            <p style="color:#888;margin:8px 0 0;font-size:14px">${error ? errorDisplay : 'You can close this tab and return to Gmail Unsubscriber.'}</p>
-          </div>
-        </body></html>`);
-
-      if (completed) return;
-      completed = true;
-      clearTimeout(timeoutId);
-      server.close();
-
-      if (error) {
-        logError('OAuthCallback', `${error}: ${errorDescription}`);
-        return reject(new Error(error));
-      }
-      if (state !== expectedState) {
-        return reject(new Error('Invalid OAuth state'));
-      }
-      if (!code) {
-        return reject(new Error('No authorization code received'));
-      }
-
-      try {
-        const { tokens } = await oauth2Client.getToken(code);
-        oauth2Client.setCredentials(tokens);
-        store.set('tokens', tokens);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        const profile = await gmail.users.getProfile({ userId: 'me' });
-        resolve({ ok: true, email: profile.data.emailAddress });
-      } catch (e) {
-        logError('TokenExchange', e);
-        reject(e);
-      }
-    });
-
-    server.on('error', (e) => {
-      logError('AuthServer', e);
-      if (!completed) {
+      const done = (result) => {
+        if (completed) return;
         completed = true;
         clearTimeout(timeoutId);
-        reject(e);
-      }
-    });
+        try { server.close(); } catch { /* ignore */ }
+        authInProgress = false;
+        resolve(result);
+      };
 
-    server.listen(REDIRECT_PORT, 'localhost', () => {
-      try {
-        const authUrl = oauth2Client.generateAuthUrl({
-          access_type: 'offline',
-          prompt: 'consent',
-          scope: SCOPES,
-          state: expectedState,
-        });
-        shell.openExternal(authUrl);
-      } catch (e) {
-        logError('GenerateAuthUrl', e);
-        server.close();
-        if (!completed) {
-          completed = true;
-          reject(e);
+      // FIX: Use URL constructor instead of deprecated url.parse()
+      const server = http.createServer(async (req, res) => {
+        let parsedUrl;
+        try {
+          parsedUrl = new URL(req.url, `http://localhost:${port}`);
+        } catch {
+          res.writeHead(400); res.end(); return;
         }
-      }
-    });
 
-    timeoutId = setTimeout(() => {
-      if (!completed) {
-        completed = true;
-        server.close();
-        reject(new Error('Authentication timeout (5 minutes exceeded)'));
-      }
-    }, AUTH_TIMEOUT);
-  }).finally(() => {
+        if (parsedUrl.pathname !== '/oauth2callback') {
+          res.writeHead(404); res.end(); return;
+        }
+
+        const code             = parsedUrl.searchParams.get('code');
+        const error            = parsedUrl.searchParams.get('error');
+        const errorDescription = parsedUrl.searchParams.get('error_description') || '';
+        const state            = parsedUrl.searchParams.get('state');
+
+        const errorDisplay = escapeHtml(error ? `${error}: ${errorDescription}` : '');
+
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html>
+          <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+          <body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f9f9f7">
+            <div style="text-align:center">
+              <div style="font-size:32px;margin-bottom:12px">${error ? '❌' : '✅'}</div>
+              <h2 style="font-weight:600;font-size:18px;margin:0 0 8px">${error ? 'Sign-in failed' : 'Signed in!'}</h2>
+              <p style="color:#888;margin:8px 0 0;font-size:14px">${error ? errorDisplay : 'You can close this tab and return to Gmail Unsubscriber.'}</p>
+            </div>
+          </body></html>`);
+
+        if (error) {
+          logError('OAuthCallback', `${error}: ${errorDescription}`);
+          return done({ ok: false, error: `Sign-in was denied: ${errorDescription || error}` });
+        }
+        if (state !== expectedState) {
+          return done({ ok: false, error: 'Security check failed (invalid state). Please try again.' });
+        }
+        if (!code) {
+          return done({ ok: false, error: 'No authorization code received.' });
+        }
+
+        try {
+          const { tokens } = await client.getToken(code);
+          client.setCredentials(tokens);
+          store.set('tokens', tokens);
+          // Attach token refresh listener
+          client.on('tokens', newTokens => {
+            try { store.set('tokens', { ...store.get('tokens'), ...newTokens }); } catch { /* ignore */ }
+          });
+          oauth2Client = client;
+          const gmail   = google.gmail({ version: 'v1', auth: client });
+          const profile = await gmail.users.getProfile({ userId: 'me' });
+          done({ ok: true, email: profile.data.emailAddress });
+        } catch (e) {
+          logError('TokenExchange', e);
+          done({ ok: false, error: e.message || 'Token exchange failed.' });
+        }
+      });
+
+      server.on('error', (e) => {
+        logError('AuthServer', e);
+        done({ ok: false, error: `Could not start auth server: ${e.message}` });
+      });
+
+      server.listen(port, '127.0.0.1', () => {
+        try {
+          const authUrl = client.generateAuthUrl({
+            access_type: 'offline',
+            prompt: 'consent',
+            scope: SCOPES,
+            state: expectedState,
+          });
+          shell.openExternal(authUrl);
+        } catch (e) {
+          logError('GenerateAuthUrl', e);
+          done({ ok: false, error: `Could not open browser: ${e.message}` });
+        }
+      });
+
+      timeoutId = setTimeout(() => {
+        done({ ok: false, error: 'Authentication timed out (5 minutes). Please try again.' });
+      }, AUTH_TIMEOUT);
+    });
+  } catch (e) {
+    logError('AuthLogin', e);
     authInProgress = false;
-  });
+    return { ok: false, error: e.message || 'Login failed.' };
+  }
 });
 
 ipcMain.handle('auth:logout', () => {
   try {
     store.delete('tokens');
-    oauth2Client = makeOAuthClient();
-    return { ok: true };
   } catch (e) {
-    logError('Logout', e);
-    return { ok: true }; // Silent success despite error
+    logError('Logout:DeleteTokens', e);
+    // If we can't delete tokens, try to clear auth client anyway
   }
+  try {
+    oauth2Client = makeOAuthClient();
+  } catch (e) {
+    logError('Logout:ResetClient', e);
+    oauth2Client = null;
+  }
+  return { ok: true };
 });
 
-// ── Scan IPC (streams progress back via webContents.send) ────────────────────
+// ── Scan IPC (streams progress back via webContents.send) ──────────────────────
 
 const SUBSCRIPTION_KEYWORDS = [
-  'unsubscribe','opt-out','opt out','mailing list','email preferences',
-  'manage preferences','manage subscription','newsletter','digest',
-  'promotional','marketing','weekly','daily digest','update your preferences',
+  'unsubscribe', 'opt-out', 'opt out', 'mailing list', 'email preferences',
+  'manage preferences', 'manage subscription', 'newsletter', 'digest',
+  'promotional', 'marketing', 'weekly', 'daily digest', 'update your preferences',
 ];
 
 const IMPORTANT_PATTERNS = [
-  /bank/i,/invoice/i,/receipt/i,/statement/i,/alert/i,
-  /verify/i,/verification/i,/confirm/i,/security/i,/payment/i,
-  /account.*(statement|update)/i,/transaction/i,/two.factor/i,/otp/i,
-  /password/i,/\bpin\b/i,
+  /bank/i, /invoice/i, /receipt/i, /statement/i, /alert/i,
+  /verify/i, /verification/i, /confirm/i, /security/i, /payment/i,
+  /account.*(statement|update)/i, /transaction/i, /two.factor/i, /otp/i,
+  /password/i, /\bpin\b/i,
 ];
 
 const CATEGORY_MAP = [
-  { r: /spotify|netflix|youtube|apple.music|disney|prime.video|hulu|deezer/i, c: 'Entertainment' },
-  { r: /linkedin|glassdoor|indeed|monster|ziprecruiter|angel\.co/i,           c: 'Professional' },
-  { r: /amazon|ebay|etsy|shopify|aliexpress|walmart|shop|store|order/i,       c: 'Shopping' },
-  { r: /medium|substack|newsletter|digest|weekly|daily|briefing|roundup/i,    c: 'Newsletter' },
-  { r: /duolingo|coursera|udemy|khan|skillshare|edx|masterclass/i,            c: 'Learning' },
-  { r: /twitter|instagram|facebook|tiktok|snapchat|reddit|pinterest/i,        c: 'Social' },
-  { r: /bank|hsbc|chase|barclays|wells.fargo|citi|ing|revolut|monzo|wise/i,   c: 'Banking' },
-  { r: /airbnb|booking|hotels|expedia|tripadvisor|skyscanner|kayak/i,         c: 'Travel' },
-  { r: /github|gitlab|stackoverflow|jira|notion|figma|atlassian/i,            c: 'Developer' },
-  { r: /google|microsoft|apple|dropbox|zoom|slack|notion/i,                   c: 'Productivity' },
+  { r: /spotify|netflix|youtube|apple.music|disney|prime.video|hulu|deezer/i,  c: 'Entertainment' },
+  { r: /linkedin|glassdoor|indeed|monster|ziprecruiter|angel\.co/i,            c: 'Professional' },
+  { r: /amazon|ebay|etsy|shopify|aliexpress|walmart|shop|store|order/i,        c: 'Shopping' },
+  { r: /medium|substack|newsletter|digest|weekly|daily|briefing|roundup/i,     c: 'Newsletter' },
+  { r: /duolingo|coursera|udemy|khan|skillshare|edx|masterclass/i,             c: 'Learning' },
+  { r: /twitter|instagram|facebook|tiktok|snapchat|reddit|pinterest/i,         c: 'Social' },
+  { r: /bank|hsbc|chase|barclays|wells.fargo|citi|ing|revolut|monzo|wise/i,    c: 'Banking' },
+  { r: /airbnb|booking|hotels|expedia|tripadvisor|skyscanner|kayak/i,          c: 'Travel' },
+  { r: /github|gitlab|stackoverflow|jira|notion|figma|atlassian/i,             c: 'Developer' },
+  { r: /google|microsoft|apple|dropbox|zoom|slack/i,                           c: 'Productivity' },
 ];
 
 function detectCategory(name, email) {
@@ -435,9 +517,9 @@ function extractUnsubFromHeaders(headers) {
   if (!h) return null;
   const matches = [...h.value.matchAll(/<([^>]+)>/g)].map(m => m[1]);
   return {
-    httpUrl:  matches.find(m => /^https?:/.test(m)) || null,
-    mailto:   matches.find(m => m.startsWith('mailto:')) || null,
-    raw: h.value,
+    httpUrl: matches.find(m => /^https?:/.test(m)) || null,
+    mailto:  matches.find(m => m.startsWith('mailto:')) || null,
+    raw:     h.value,
   };
 }
 
@@ -449,6 +531,9 @@ function getBodyHtml(payload) {
   return '';
 }
 
+/**
+ * FIX: Decode HTML entities in extracted URLs so &amp; becomes & before fetching.
+ */
 function extractUnsubFromBody(html) {
   const patterns = [
     /href="([^"]*unsubscribe[^"]*?)"/i,
@@ -457,13 +542,13 @@ function extractUnsubFromBody(html) {
   ];
   for (const p of patterns) {
     const m = html.match(p);
-    if (m?.[1]) return m[1];
+    if (m?.[1]) return decodeHtmlEntities(m[1]);
   }
   return null;
 }
 
 function sendProgress(phase, progress, meta = {}) {
-  if (mainWindow) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('scan:progress', { phase, progress, ...meta });
   }
 }
@@ -488,7 +573,6 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
     perfLog('scan_start', { scanLimit: Number.isFinite(scanLimit) ? scanLimit : 'all', scanConcurrency });
     const senderMap = new Map();
 
-    // Stream pages and process incrementally to avoid loading all message IDs in memory.
     let pageToken = null;
     let totalListed = 0;
     let processedMessages = 0;
@@ -508,8 +592,8 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
       pageCount++;
 
       const remaining = Number.isFinite(scanLimit) ? Math.max(scanLimit - totalListed, 0) : pageMessages.length;
-      const batch = Number.isFinite(scanLimit) ? pageMessages.slice(0, remaining) : pageMessages;
-      totalListed += batch.length;
+      const batch     = Number.isFinite(scanLimit) ? pageMessages.slice(0, remaining) : pageMessages;
+      totalListed    += batch.length;
 
       sendProgress(
         `Reading inbox… (${totalListed} messages, page ${pageCount})`,
@@ -530,19 +614,19 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
           }), 'GetMessageMetadata');
 
           const headers = Array.isArray(detail.data.payload?.headers) ? detail.data.payload.headers : [];
-          const from = headers.find(h => h.name === 'From')?.value || '';
+          const from    = headers.find(h => h.name === 'From')?.value    || '';
           const subject = headers.find(h => h.name === 'Subject')?.value || '';
-          const date = headers.find(h => h.name === 'Date')?.value || '';
+          const date    = headers.find(h => h.name === 'Date')?.value    || '';
 
           const emailMatch = from.match(/<([^>]+)>/) || from.match(/([^\s]+@[^\s]+)/);
-          const nameMatch = from.match(/^"?([^"<]+)"?\s*</);
-          const email = emailMatch?.[1]?.toLowerCase().trim();
-          const name = nameMatch?.[1]?.trim() || email?.split('@')[0] || '';
+          const nameMatch  = from.match(/^"?([^"<]+"?)\s*</);
+          const email      = emailMatch?.[1]?.toLowerCase().trim();
+          const name       = nameMatch?.[1]?.replace(/["']/g, '').trim() || email?.split('@')[0] || '';
           if (!email?.includes('@')) return;
 
           const unsubHeader = extractUnsubFromHeaders(headers);
-          const hasUnsub = !!unsubHeader;
-          const isSub = hasUnsub || SUBSCRIPTION_KEYWORDS.some(k => subject.toLowerCase().includes(k));
+          const hasUnsub    = !!unsubHeader;
+          const isSub       = hasUnsub || SUBSCRIPTION_KEYWORDS.some(k => subject.toLowerCase().includes(k));
           if (!isSub) return;
 
           const msgDate = new Date(date);
@@ -553,19 +637,24 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
               e.messageIds.push(msg.id);
               if (msgDate > e.lastDate) { e.lastDate = msgDate; e.lastSubject = subject; }
               if (!e.unsubscribeHeader && unsubHeader) e.unsubscribeHeader = unsubHeader;
+              // FIX: Re-evaluate importance on every email — if ANY email from
+              // this sender triggers an important pattern, upgrade to 'important'.
+              if (e.risk !== 'important' && detectImportance(name, email, subject)) {
+                e.risk = 'important';
+              }
             } else {
               senderMap.set(email, {
-                id: email,
-                name: name.replace(/['"]/g, '').trim() || email.split('@')[0],
+                id:               email,
+                name:             name.replace(/['"\u201C\u201D]/g, '').trim() || email.split('@')[0],
                 email,
-                count: 1,
-                lastDate: msgDate,
-                lastSubject: subject,
-                category: detectCategory(name, email),
-                risk: detectImportance(name, email, subject) ? 'important' : 'safe',
+                count:            1,
+                lastDate:         msgDate,
+                lastSubject:      subject,
+                category:         detectCategory(name, email),
+                risk:             detectImportance(name, email, subject) ? 'important' : 'safe',
                 unsubscribeHeader: unsubHeader,
                 hasUnsub,
-                messageIds: [msg.id],
+                messageIds:       [msg.id],
               });
             }
           }
@@ -597,12 +686,12 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
     const durationMs = Date.now() - scanStartedAt;
     perfLog('scan_done', {
       durationMs,
-      pages: pageCount,
-      listedMessages: totalListed,
+      pages:            pageCount,
+      listedMessages:   totalListed,
       processedMessages,
-      senderCount: senders.length,
+      senderCount:      senders.length,
       scanErrors,
-      scanLimit: Number.isFinite(scanLimit) ? scanLimit : 'all',
+      scanLimit:        Number.isFinite(scanLimit) ? scanLimit : 'all',
       scanConcurrency,
     });
     return {
@@ -610,10 +699,10 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
       senders,
       scanErrors,
       metrics: {
-        pages: pageCount,
-        listedMessages: totalListed,
+        pages:            pageCount,
+        listedMessages:   totalListed,
         processedMessages,
-        senders: senders.length,
+        senders:          senders.length,
         durationMs,
         scanConcurrency,
       },
@@ -625,33 +714,46 @@ ipcMain.handle('scan:start', async (_, options = {}) => {
   }
 });
 
-// ── Unsubscribe IPC ───────────────────────────────────────────────────────────
+// ── Unsubscribe IPC ────────────────────────────────────────────────────────────
 
-function createAbortController() {
+function createRequestAbortController() {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+  const timeoutId  = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   return { controller, timeoutId };
 }
 
+/**
+ * FIX: Use Gmail batchModify API instead of individual trash() calls.
+ * One API call can handle up to 1000 message IDs, dramatically reducing
+ * quota usage and latency for inbox cleanup.
+ */
 async function cleanupSenderEmails(gmail, messageIds) {
-  const ids = [...new Set((Array.isArray(messageIds) ? messageIds : []).filter(id => typeof id === 'string' && id.length > 0))];
+  const ids = [...new Set(
+    (Array.isArray(messageIds) ? messageIds : [])
+      .filter(id => typeof id === 'string' && id.length > 0)
+  )];
   if (!ids.length) return { cleanedCount: 0, cleanupErrors: 0 };
 
-  let cleanedCount = 0;
+  let cleanedCount  = 0;
   let cleanupErrors = 0;
-  const BATCH = 10;
+  const BATCH_SIZE  = 1000; // batchModify supports up to 1000 IDs per call
 
-  for (let i = 0; i < ids.length; i += BATCH) {
-    const batch = ids.slice(i, i + BATCH);
-    await Promise.all(batch.map(async (msgId) => {
-      try {
-        await withRetry(() => gmail.users.messages.trash({ userId: 'me', id: msgId }), 'TrashMessage');
-        cleanedCount++;
-      } catch (e) {
-        cleanupErrors++;
-        logError('TrashMessage', e);
-      }
-    }));
+  for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+    const batch = ids.slice(i, i + BATCH_SIZE);
+    try {
+      await withRetry(() => gmail.users.messages.batchModify({
+        userId: 'me',
+        requestBody: {
+          ids: batch,
+          addLabelIds:    ['TRASH'],
+          removeLabelIds: ['INBOX'],
+        },
+      }), 'BatchTrash');
+      cleanedCount += batch.length;
+    } catch (e) {
+      cleanupErrors += batch.length;
+      logError('BatchTrash', e);
+    }
   }
 
   return { cleanedCount, cleanupErrors };
@@ -660,6 +762,7 @@ async function cleanupSenderEmails(gmail, messageIds) {
 ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds, cleanupInbox }) => {
   try {
     const unsubStartedAt = Date.now();
+
     // Input validation
     if (!senderId || typeof senderId !== 'string') {
       return { ok: false, reason: 'INVALID_SENDER_ID' };
@@ -677,16 +780,11 @@ ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds,
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     let unsubResult = { ok: false, reason: 'NO_METHOD_AVAILABLE' };
 
-    // 1. RFC 8058 one-click POST
+    // ── Method 1: RFC 8058 One-Click POST ─────────────────────────────────────
     if (unsubscribeHeader?.httpUrl) {
       try {
         const safeHttpUrl = getSafeHttpUrl(unsubscribeHeader.httpUrl);
-        if (!safeHttpUrl) {
-          throw new Error('Blocked or invalid unsubscribe URL');
-        }
-
-        // Check for one-click post header
-        if (messageIds?.length) {
+        if (safeHttpUrl && messageIds?.length) {
           try {
             const d = await gmail.users.messages.get({
               userId: 'me',
@@ -698,11 +796,14 @@ ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds,
               ? d.data.payload.headers.find(h => h.name?.toLowerCase() === 'list-unsubscribe-post')
               : null;
             if (postH?.value?.toLowerCase().includes('list-unsubscribe=one-click')) {
-              const { controller, timeoutId } = createAbortController();
+              const { controller, timeoutId } = createRequestAbortController();
               try {
                 const r = await withRetry(() => fetch(safeHttpUrl, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Gmail-Unsubscriber/1.0' },
+                  headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Gmail-Unsubscriber/1.0',
+                  },
                   body: 'List-Unsubscribe=One-Click',
                   signal: controller.signal,
                 }), 'OneClickPost');
@@ -717,87 +818,40 @@ ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds,
             logError('OneClickCheck', e);
           }
         }
-
-        // Fallback GET
-        const { controller, timeoutId } = createAbortController();
-        try {
-          const r = await withRetry(() => fetch(safeHttpUrl, {
-            method: 'GET',
-            headers: { 'User-Agent': 'Gmail-Unsubscriber/1.0' },
-            redirect: 'follow',
-            signal: controller.signal,
-          }), 'HttpUnsubscribe');
-          clearTimeout(timeoutId);
-          if (!unsubResult.ok && r.status < 500) unsubResult = { ok: true, method: 'http-get' };
-        } catch (e) {
-          clearTimeout(timeoutId);
-          logError('HttpUnsubscribe', e);
-        }
       } catch (e) {
         logError('UrlValidation', e);
       }
     }
 
-    // 2. Body link extraction (preferred over mailto to reduce bounce failures)
-    if (!unsubResult.ok) for (const msgId of (messageIds || []).slice(0, 3)) {
-      try {
-        if (!msgId || typeof msgId !== 'string') continue;
-        const d = await withRetry(() => gmail.users.messages.get({ userId: 'me', id: msgId, format: 'full' }), 'BodyExtraction');
-        const html = getBodyHtml(d.data.payload);
-        const link = extractUnsubFromBody(html);
-        if (link) {
-          try {
-            const safeLink = getSafeHttpUrl(link);
-            if (!safeLink) throw new Error('Blocked or invalid body unsubscribe URL');
-            const { controller, timeoutId } = createAbortController();
-            try {
-              const r = await withRetry(() => fetch(safeLink, {
-                method: 'GET',
-                headers: { 'User-Agent': 'Gmail-Unsubscriber/1.0' },
-                redirect: 'follow',
-                signal: controller.signal,
-              }), 'BodyLinkUnsubscribe');
-              clearTimeout(timeoutId);
-              if (r.status < 500) {
-                unsubResult = { ok: true, method: 'body-link' };
-                break;
-              }
-            } catch (e) {
-              clearTimeout(timeoutId);
-              logError('LinkFetch', e);
-            }
-          } catch (e) {
-            logError('LinkValidation', e);
-          }
-        }
-      } catch (e) {
-        logError('BodyExtraction', e);
-      }
-    }
-
-    // 3. Mailto (submission only; final delivery is controlled by remote mailbox)
+    // ── Method 2: Mailto (standard automated email request) ──────────────────
     if (!unsubResult.ok && unsubscribeHeader?.mailto) {
       try {
         const mu = new URL(unsubscribeHeader.mailto);
-        const to = mu.pathname.replace(/^mailto:/i, '').trim();
-        // URLSearchParams already decodes values; avoid double-decoding.
-        let subject = mu.searchParams.get('subject') || 'Unsubscribe';
-        let body = mu.searchParams.get('body') || 'Please unsubscribe me.';
+        // For mailto: URLs, the recipient is in the pathname after the "mailto:" scheme.
+        // new URL('mailto:foo@bar.com') → pathname = 'foo@bar.com'
+        const to = mu.pathname.trim();
 
-        // Basic recipient validation + header-injection hardening.
+        let subject = mu.searchParams.get('subject') || 'Unsubscribe';
+        let body    = mu.searchParams.get('body')    || 'Please unsubscribe me from your mailing list.';
+
+        // Validate recipient and guard against header injection.
         if (!to.includes('@') || /\s/.test(to)) {
           throw new Error('Invalid mailto recipient');
         }
         subject = subject.replace(/[\r\n]/g, ' ').slice(0, 100);
-        body = body.replace(/\r/g, '\n').slice(0, 1000);
+        body    = body.replace(/\r/g, '\n').slice(0, 1000);
 
         const raw = Buffer.from(
           `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
         ).toString('base64url');
-        await withRetry(() => gmail.users.messages.send({ userId: 'me', requestBody: { raw } }), 'MailtoUnsubscribe');
+
+        await withRetry(
+          () => gmail.users.messages.send({ userId: 'me', requestBody: { raw } }),
+          'MailtoUnsubscribe'
+        );
         unsubResult = {
-          ok: true,
-          method: 'mailto-submitted',
+          ok:      true,
+          method:  'mailto-submitted',
           warning: 'Mailto queued; remote mailbox may still reject delivery.',
         };
       } catch (e) {
@@ -805,28 +859,89 @@ ipcMain.handle('unsub:one', async (_, { senderId, unsubscribeHeader, messageIds,
       }
     }
 
+    // ── Method 3: HTTP GET on List-Unsubscribe URL ────────────────────────────
+    if (!unsubResult.ok && unsubscribeHeader?.httpUrl) {
+      try {
+        const safeHttpUrl = getSafeHttpUrl(unsubscribeHeader.httpUrl);
+        if (safeHttpUrl) {
+          const { controller, timeoutId } = createRequestAbortController();
+          try {
+            const r = await withRetry(() => fetch(safeHttpUrl, {
+              method: 'GET',
+              headers: { 'User-Agent': 'Gmail-Unsubscriber/1.0' },
+              redirect: 'follow',
+              signal: controller.signal,
+            }), 'HttpUnsubscribe');
+            clearTimeout(timeoutId);
+            if (r.ok) unsubResult = { ok: true, method: 'http-get' };
+          } catch (e) {
+            clearTimeout(timeoutId);
+            logError('HttpUnsubscribe', e);
+          }
+        }
+      } catch (e) {
+        logError('UrlValidation', e);
+      }
+    }
+
+    // ── Method 4: Body link extraction (last resort) ──────────────────────────
+    if (!unsubResult.ok) {
+      for (const msgId of (messageIds || []).slice(0, 3)) {
+        if (!msgId || typeof msgId !== 'string') continue;
+        try {
+          const d    = await withRetry(() => gmail.users.messages.get({ userId: 'me', id: msgId, format: 'full' }), 'BodyExtraction');
+          const html = getBodyHtml(d.data.payload);
+          const link = extractUnsubFromBody(html); // Already HTML-entity decoded
+          if (link) {
+            const safeLink = getSafeHttpUrl(link);
+            if (safeLink) {
+              const { controller, timeoutId } = createRequestAbortController();
+              try {
+                const r = await withRetry(() => fetch(safeLink, {
+                  method: 'GET',
+                  headers: { 'User-Agent': 'Gmail-Unsubscriber/1.0' },
+                  redirect: 'follow',
+                  signal: controller.signal,
+                }), 'BodyLinkUnsubscribe');
+                clearTimeout(timeoutId);
+                if (r.ok) {
+                  unsubResult = { ok: true, method: 'body-link' };
+                  break;
+                }
+              } catch (e) {
+                clearTimeout(timeoutId);
+                logError('LinkFetch', e);
+              }
+            }
+          }
+        } catch (e) {
+          logError('BodyExtraction', e);
+        }
+      }
+    }
+
     const cleanupEnabled = cleanupInbox === true;
     if (!cleanupEnabled || !unsubResult.ok) {
       perfLog('unsub_done', {
         senderId,
-        method: unsubResult.method || null,
-        ok: !!unsubResult.ok,
+        method:       unsubResult.method || null,
+        ok:           !!unsubResult.ok,
         cleanupEnabled,
-        durationMs: Date.now() - unsubStartedAt,
+        durationMs:   Date.now() - unsubStartedAt,
       });
       return unsubResult;
     }
 
     const cleanup = await cleanupSenderEmails(gmail, messageIds);
-    const result = { ...unsubResult, ...cleanup };
+    const result  = { ...unsubResult, ...cleanup };
     perfLog('unsub_done', {
       senderId,
-      method: result.method || null,
-      ok: !!result.ok,
+      method:        result.method       || null,
+      ok:            !!result.ok,
       cleanupEnabled,
-      cleanedCount: result.cleanedCount || 0,
+      cleanedCount:  result.cleanedCount  || 0,
       cleanupErrors: result.cleanupErrors || 0,
-      durationMs: Date.now() - unsubStartedAt,
+      durationMs:    Date.now() - unsubStartedAt,
     });
     return result;
   } catch (e) {

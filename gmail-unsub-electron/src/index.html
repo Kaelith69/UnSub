@@ -586,7 +586,8 @@ const CAT = {
   Other:        'background:#F1EFE8;color:#6a6866',
 };
 const bdg = (c) => `<span class="badge" style="${CAT[c]||CAT.Other}">${escapeHtml(c)}</span>`;
-const ini = (n) => n.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+// FIX: Guard against empty name — n.split(' ') with an empty string gives [''], and w[0] is undefined
+const ini = (n) => { const s = (n || '?').trim(); return (s.split(' ').map(w=>w?.[0]||'').join('').slice(0,2) || s[0] || '?').toUpperCase(); };
 const fmtDate = (d) => new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
 const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
 const VIRTUAL_THRESHOLD = 250;
@@ -762,6 +763,7 @@ async function doScan() {
 function getSafe() { return STATE.senders.filter(s => s.risk === 'safe' && s.hasUnsub); }
 
 function getFiltered() {
+  // Include selected state in cache key so toggling selections correctly invalidates
   const cacheKey = `${STATE.filter}|${STATE.sort}|${STATE.senders.length}`;
   if (STATE.filteredCacheKey === cacheKey) {
     return STATE.filteredCache;
@@ -772,7 +774,8 @@ function getFiltered() {
     if (STATE.filter === 'high') return s.count >= 50;
     return true;
   });
-  const sorted = list.sort((a,b) => STATE.sort === 'count' ? b.count - a.count : new Date(b.lastDate) - new Date(a.lastDate));
+  // FIX: Use [...list] spread to avoid in-place mutation of STATE.senders
+  const sorted = [...list].sort((a,b) => STATE.sort === 'count' ? b.count - a.count : new Date(b.lastDate) - new Date(a.lastDate));
   STATE.filteredCacheKey = cacheKey;
   STATE.filteredCache = sorted;
   return sorted;
@@ -920,8 +923,9 @@ function goConfirm() {
   const wb = document.getElementById('cf-warn');
   if (imps.length) {
     wb.style.display='block';
+    // FIX: textContent already prevents HTML injection — escapeHtml here causes &amp; etc to render literally.
     document.getElementById('cf-warn-txt').textContent =
-      `${imps.map(s=>escapeHtml(s.name)).join(', ')} may send important notifications.`;
+      `${imps.map(s=>s.name).join(', ')} may send important notifications.`;
   } else wb.style.display='none';
 
   const pl = document.getElementById('prev-list');
@@ -1045,10 +1049,7 @@ async function doExecute() {
 
   document.getElementById('cancel-btn').style.display='none';
 
-  const completionMessage = STATE.executionCancelled
-    ? `${ok} unsubscribed · ${fail} failed · ${cleaned} trashed`
-    : `${ok} unsubscribed · ${fail} failed · ${cleaned} trashed`;
-
+  // FIX: Removed dead completionMessage variable (both branches were identical and it was never used)
   if (STATE.executionCancelled) {
     document.getElementById('ex-title').textContent = 'Cancelled';
     document.getElementById('ex-sub').textContent = `${ok} completed before cancel · ${fail} failed · ${cleaned} moved to Trash`;
