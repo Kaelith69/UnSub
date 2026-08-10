@@ -29,7 +29,7 @@
 All processing runs on the user's local machine. No email content, tokens, or metadata are transmitted to any server other than Google's Gmail API.
 
 **Entry point:** `gmail-unsub-electron/src/main.js` → `app.whenReady().then(createWindow)`  
-**Renderer loaded:** `gmail-unsub-electron/src/index.html` (inline app logic + `app.js`)  
+**Renderer loaded:** `gmail-unsub-electron/src/index.html` (inline app logic)  
 **Secure bridge:** `gmail-unsub-electron/src/preload.js` (`contextBridge.exposeInMainWorld`)
 
 ---
@@ -44,7 +44,7 @@ The application follows the standard Electron two-process model:
 |---|---|---|
 | Main Process | `src/main.js` | OAuth, Gmail API calls, IPC handlers |
 | Preload Bridge | `src/preload.js` | Safe IPC surface exposed to renderer |
-| Renderer Process | `src/index.html`, `src/app.js` | All UI, state management, user flows |
+| Renderer Process | `src/index.html` | All UI, state management, user flows |
 | Token Store | `electron-store` (encrypted) | Persists OAuth tokens on-device |
 | OAuth Callback | `http.createServer` in `main.js` | Temporary localhost:9876 server for code exchange |
 
@@ -113,53 +113,11 @@ The application follows the standard Electron two-process model:
 | `api.onProgress(cb)` | `scan:progress` | event ← main (returns unsubscribe fn) |
 | `api.unsubOne(payload)` | `unsub:one` | invoke → main |
 
----
 
-### Module: `gmail-unsub-electron/src/app.js`
-
-**Purpose:** Renderer-side application logic providing two classes — `AppState` (data model) and `UIController` (DOM manipulation) — intended as a modular refactor. **Note:** `app.js` is not loaded by the production `src/index.html` (which uses its own self-contained inline script). It is a standalone module associated with `src/index-refactored.html`.
-
-**Class: `AppState`** (`app.js:10–81`)
-
-| Method | Description |
-|---|---|
-| `constructor()` | Initialises `senders[]`, `selected` (Set), `confirmed[]`, `filter`, `sort`, `currentScreen` |
-| `reset()` | Clears all scan state |
-| `addSenders(data)` | Replaces sender list and clears selection |
-| `toggleSender(id)` | Toggles selection; no-op for `risk:'important'` senders |
-| `isSenderLocked(id)` | Returns `true` if sender `risk === 'important'` |
-| `getFilteredSenders()` | Applies `filter` ('safe'/'high'/all) and `sort` ('count'/'date') |
-| `getSafeSenders()` | Returns senders with `risk:'safe'` AND `hasUnsub:true` |
-| `getSelectedCount()` | Returns `selected.size` |
-| `getSelectedEmails()` | Sums `count` across all selected senders |
-| `setConfirmed()` | Copies selected senders into `confirmed[]` |
-
-**Class: `UIController`** (`app.js:87–326`)
-
-| Method | Description |
-|---|---|
-| `showScreen(name)` | Removes `active` from all `.screen` elements; adds it to `${name}-screen` |
-| `setLoadingButton(buttonId, loading)` | Disables/enables button; sets `data-loading` attribute |
-| `toast(message, duration, type)` | Shows `#toast` element; auto-hides after `duration` ms |
-| `updateAuthUI(email)` | Shows/hides `#user-pill` with the authenticated email |
-| `updateScanProgress(phase, progress)` | Updates `#prog-fill` width and `#prog-lbl` text |
-| `renderSenderList()` | Populates `#sender-list` with `createSenderRow` output |
-| `createSenderRow(sender)` | Returns HTML string for one sender row (initials, category badge, count) |
-| `updateHeaderStats()` | Updates sender count, email total, safe count, smart-select label |
-| `updateSelectionUI()` | Syncs `#chk-all` indeterminate state, `#sel-count`, bottom bar visibility |
-| `updateConfirmScreen()` | Populates confirm screen with sender count, email count, preview list |
-| `updateExecuteScreen(ok, fail)` | Updates execute summary card with success/failure counts |
-| `setExecuteRowStatus(senderId, status, method)` | Updates individual row dot and label in execute screen |
-| `escapeId(str)` | `CSS.escape(str)` for safe DOM ID queries |
-| `escapeAttr(str)` | Escapes `&`, `"`, `'` for HTML attribute values |
-| `escapeText(str)` | Uses `div.textContent` assignment to safely encode text for HTML |
-| `getCategoryColor(category)` | Maps category name to CSS variable prefix (`green`/`blue`/`amber`/`red`) |
-
----
 
 ### Module: `gmail-unsub-electron/src/index.html`
 
-**Purpose:** Single-page application shell rendered in the Electron `BrowserWindow`. Contains all CSS, HTML screens, and the inline JavaScript `AppController` that wires `AppState`, `UIController`, and `window.api` together.
+**Purpose:** Single-page application shell rendered in the Electron `BrowserWindow`. Contains all CSS, HTML screens, and the inline JavaScript that wires the state, UI, and `window.api` together.
 
 **Screens** (verified in `index.html` DOM structure):
 
@@ -171,7 +129,7 @@ The application follows the standard Electron two-process model:
 | `#confirm-screen` | Review selected senders before executing |
 | `#execute-screen` | Live per-sender status rows during unsubscribe execution |
 
-**Global state object** (inline script at `index.html:552`; this is independent of the `AppState` class in `app.js`, which is not loaded by the production `index.html`):
+**Global state object** (inline script at `index.html:552`):
 ```js
 const STATE = {
   senders: [], selected: new Set(), confirmed: [],
@@ -393,7 +351,7 @@ All security mechanisms are verified in the source code:
 | Auth timeout | 5-minute `setTimeout` on the OAuth callback server | `main.js:341–347` |
 | Header injection guard | `to`, `subject`, `body` sanitised before mailto send | `main.js:747–751` |
 | HTML output escaping | `escapeHtml()` used in OAuth callback page | `main.js:143–153,280` |
-| Important sender lock | Senders matching `IMPORTANT_PATTERNS` are flagged `risk:'important'`; `AppState.toggleSender` refuses to select them | `main.js:372–377`, `app.js:36–43` |
+| Important sender lock | Senders matching `IMPORTANT_PATTERNS` are flagged `risk:'important'`; `toggleSender` refuses to select them | `main.js:372–377`, `index.html:859–870` |
 
 ---
 

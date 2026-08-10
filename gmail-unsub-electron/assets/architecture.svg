@@ -17,17 +17,17 @@
   <!-- ─── Renderer Process box ─── -->
   <rect x="30" y="60" width="220" height="200" rx="10" fill="#e8f0fd" stroke="#1a54d6" stroke-width="1.5"/>
   <text x="140" y="83" text-anchor="middle" font-size="12" font-weight="700" fill="#1a54d6">Renderer Process</text>
-  <text x="140" y="100" text-anchor="middle" font-size="10" fill="#444">index.html + app.js</text>
+  <text x="140" y="100" text-anchor="middle" font-size="10" fill="#444">index.html</text>
   <!-- Sub-boxes -->
   <rect x="48" y="110" width="184" height="34" rx="5" fill="#fff" stroke="#bcd0f7" stroke-width="1"/>
-  <text x="140" y="125" text-anchor="middle" font-size="10" font-weight="600" fill="#333">AppState</text>
+  <text x="140" y="125" text-anchor="middle" font-size="10" font-weight="600" fill="#333">Global STATE</text>
   <text x="140" y="138" text-anchor="middle" font-size="9" fill="#777">senders · selected · filter · sort</text>
   <rect x="48" y="152" width="184" height="34" rx="5" fill="#fff" stroke="#bcd0f7" stroke-width="1"/>
-  <text x="140" y="167" text-anchor="middle" font-size="10" font-weight="600" fill="#333">UIController</text>
-  <text x="140" y="180" text-anchor="middle" font-size="9" fill="#777">screens · toast · renderSenderList</text>
+  <text x="140" y="167" text-anchor="middle" font-size="10" font-weight="600" fill="#333">DOM Updates</text>
+  <text x="140" y="180" text-anchor="middle" font-size="9" fill="#777">screens · toast · renderList</text>
   <rect x="48" y="194" width="184" height="34" rx="5" fill="#fff" stroke="#bcd0f7" stroke-width="1"/>
-  <text x="140" y="209" text-anchor="middle" font-size="10" font-weight="600" fill="#333">AppController</text>
-  <text x="140" y="222" text-anchor="middle" font-size="9" fill="#777">boot · doLogin · startScan · execute</text>
+  <text x="140" y="209" text-anchor="middle" font-size="10" font-weight="600" fill="#333">App Logic</text>
+  <text x="140" y="222" text-anchor="middle" font-size="9" fill="#777">boot · doLogin · doScan · doExecute</text>
 
   <!-- ─── Preload bridge box ─── -->
   <rect x="310" y="100" width="180" height="120" rx="10" fill="#fef3df" stroke="#8a5500" stroke-width="1.5"/>
